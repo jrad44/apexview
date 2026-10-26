@@ -19,16 +19,20 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "app.apexview"
+        // Its own app ID, so this fork installs beside the original Apexview instead of clashing with it.
+        applicationId = "app.apexview.fold"
         minSdk = 29
         targetSdk = 35
         // Bump both for every build that goes to the phone, so it's clear which one is installed.
-        versionCode = 46
-        versionName = "0.46"
+        // CI sets these per build (see .github/workflows/release.yml); local builds use the fallback.
+        versionCode = (System.getenv("APEX_VERSION_CODE") ?: "4600").toInt()
+        versionName = System.getenv("APEX_VERSION_NAME") ?: "0.46.0"
         val builtAt = LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMM d, HH:mm"))
         buildConfigField("String", "BUILT_AT", "\"$builtAt\"")
         // Where updates come from (owner/repo on GitHub). A fork points this at its own releases.
-        buildConfigField("String", "UPDATE_REPO", "\"mikeyyy0/apexview\"")
+        // GitHub Actions supplies the fork's own owner/repo, so updates always come from where it was built.
+        val updateRepo = System.getenv("GITHUB_REPOSITORY") ?: "mikeyyy0/apexview"
+        buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
     }
 
     signingConfigs {

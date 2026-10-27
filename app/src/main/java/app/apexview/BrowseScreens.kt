@@ -501,7 +501,8 @@ fun HomeScreen(app: AppState) {
     val scope = rememberCoroutineScope()
     val heroFocus = remember { FocusRequester() }
     val turn: (Int) -> Unit = { step ->
-        if (count > 1) scope.launch {
+        // One turn at a time: presses during a turn are dropped rather than stacked up.
+        if (count > 1 && !pager.isScrollInProgress) scope.launch {
             pager.animateScrollToPage(pager.currentPage + step, animationSpec = tween(Motion.SCREEN_MS, easing = EaseOut))
             delay(50)
             runCatching { heroFocus.requestFocus() }
@@ -795,9 +796,12 @@ private fun PickHero(app: AppState, pick: Pick, focus: FocusRequester? = null, t
     Row(
         Modifier.onPreviewKeyEvent { e ->
             if (turn == null || e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            // Holding the key down repeats it many times a second; that turned the carousel over
+            // and over, fighting itself. A held key turns it once.
+            val first = e.nativeKeyEvent.repeatCount == 0
             when {
-                e.key == Key.DirectionRight && focused == last -> { turn(1); true }
-                e.key == Key.DirectionLeft && focused == 0 -> { turn(-1); true }
+                e.key == Key.DirectionRight && focused == last -> { if (first) turn(1); true }
+                e.key == Key.DirectionLeft && focused == 0 -> { if (first) turn(-1); true }
                 else -> false
             }
         },

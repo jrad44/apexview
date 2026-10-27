@@ -90,6 +90,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -121,6 +131,8 @@ private const val SIDE_CUTOUT = 0.3f
 private const val HELP_FIRST_DELAY_MS = 2_500L
 /** On a live stream, this close to the newest picture still shows as Live. */
 private const val LIVE_EDGE_MS = 30_000L
+/** How long after the last left or right on a TV's scrubber it jumps to the new spot. */
+private const val TV_SCRUB_SETTLE_MS = 900L
 /** Onboards narrower than this skip the timing card; it would cover too much of the picture. */
 private val CARD_MIN_TILE = 230.dp
 private val CARD_MAX_WIDTH = 250.dp
@@ -227,7 +239,9 @@ fun ViewerScreen(app: AppState) {
     // feeds stay full size, so what you place is where it ends up.
     val motion = tween<Float>(Motion.SCREEN_MS, easing = EaseOut)
     // Laptop mode keeps the stream still: the controls lie over its top edge instead.
-    val lift by animateFloatAsState(if (app.chromeVisible && !app.arranging && !app.laptopActive) 1f else 0f, motion, label = "lift")
+    // A TV's video surfaces don't follow this scale (the picture drew small inside each tile),
+    // so there the controls lie over the feeds instead, as in laptop mode.
+    val lift by animateFloatAsState(if (app.chromeVisible && !app.arranging && !app.laptopActive && !app.isTv) 1f else 0f, motion, label = "lift")
 
     BoxWithConstraints(
         Modifier
@@ -465,8 +479,59 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
         // Live streams scrub too, across however much of the broadcast F1 keeps (its rewind
         // window); the right end is the live edge.
         if (duration > 0) {
+            // On a TV the remote scrubs: left and right move the mark (further the longer it's
+            // held), and it jumps there a moment after you stop, or right away on OK.
+            val tv = app.isTv
+            val scrubFocus = remember { MutableInteractionSource() }
+            val scrubFocused by scrubFocus.collectIsFocusedAsState()
+            var tvTarget by remember { mutableStateOf<Float?>(null) }
+            LaunchedEffect(tvTarget) {
+                val target = tvTarget ?: return@LaunchedEffect
+                delay(TV_SCRUB_SETTLE_MS)
+                app.seekTo((target * duration).toLong())
+                tvTarget = null
+                scrubbing = null
+            }
+            val tvKeys = if (!tv) Modifier else Modifier
+                .onKeyEvent { e ->
+                    if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    val held = e.nativeKeyEvent.repeatCount
+                    val stepMs = when {
+                        held >= 20 -> 120_000L
+                        held >= 8 -> 30_000L
+                        else -> 10_000L
+                    }
+                    val from = scrubbing ?: (app.positionMs.toFloat() / duration).coerceIn(0f, 1f)
+                    when (e.key) {
+                        Key.DirectionRight, Key.DirectionLeft -> {
+                            val sign = if (e.key == Key.DirectionRight) 1 else -1
+                            val next = (from + sign * stepMs.toFloat() / duration).coerceIn(0f, 1f)
+                            scrubbing = next
+                            tvTarget = next
+                            app.showChrome()
+                            true
+                        }
+                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                            scrubbing?.let { app.seekTo((it * duration).toLong()) }
+                            scrubbing = null
+                            tvTarget = null
+                            true
+                        }
+                        else -> false
+                    }
+                }
+                .focusable(interactionSource = scrubFocus)
             // The flags sit on the line itself, under the thumb.
-            Box(Modifier.helpAnchor(app, "scrubber"), contentAlignment = Alignment.CenterStart) {
+            Box(
+                Modifier
+                    .helpAnchor(app, "scrubber")
+                    .then(tvKeys)
+                    .then(
+                        if (scrubFocused) Modifier.border(2.dp, Color.White, RoundedCornerShape(16.dp)).padding(horizontal = 6.dp)
+                        else Modifier
+                    ),
+                contentAlignment = Alignment.CenterStart,
+            ) {
                 ScrubberFlags(app, duration)
                 AppleSlider(
                     value = scrubbing ?: (app.positionMs.toFloat() / duration).coerceIn(0f, 1f),
@@ -475,6 +540,8 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
                         scrubbing?.let { app.seekTo((it * duration).toLong()) }
                         scrubbing = null
                     },
+                    // On a TV the box around it takes the remote, not the slider itself.
+                    modifier = if (tv) Modifier.focusProperties { canFocus = false } else Modifier,
                 )
             }
         }

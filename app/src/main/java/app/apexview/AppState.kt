@@ -227,6 +227,52 @@ class AppState(
     val settings = Settings(context)
     val updater = Updater(context, scope)
 
+    /** On a TV: no touch, a remote instead, and sign-in comes from the phone. */
+    val isTv = Tv.isTv(context)
+
+    /** The TV's side of sign-in from the phone: a code on screen and a listener for the token. */
+    val tvPairing by lazy {
+        TvPairing(context, scope) { token ->
+            pastedToken = token
+            usePastedToken()
+        }
+    }
+
+    /** The phone's side: finds TVs on the home network waiting to be signed in. */
+    val tvFinder by lazy { TvFinder(context, scope) }
+    var sendToTvOpen by mutableStateOf(false)
+    var sendToTvBusy by mutableStateOf(false)
+    var sendToTvResult by mutableStateOf<String?>(null)
+
+    fun openSendToTv() {
+        sendToTvResult = null
+        sendToTvOpen = true
+        tvFinder.start()
+    }
+
+    fun closeSendToTv() {
+        sendToTvOpen = false
+        tvFinder.stop()
+    }
+
+    fun sendToTv(target: TvFinder.Found?, manual: String?, code: String) {
+        val token = TokenStore.load(context) ?: run {
+            sendToTvResult = "Sign in on this phone first."
+            return
+        }
+        scope.launch {
+            sendToTvBusy = true
+            sendToTvResult = null
+            val problem = tvFinder.send(target, manual, code, token)
+            sendToTvBusy = false
+            if (problem == null) {
+                sendToTvResult = "Signed in. Your TV is ready."
+            } else {
+                sendToTvResult = problem
+            }
+        }
+    }
+
     var auth by mutableStateOf(AuthState.CHECKING)
         private set
     var tier by mutableStateOf("")
@@ -831,9 +877,14 @@ class AppState(
 
     /** Opens the F1 TV account site in the browser. */
     fun openAccountPage() {
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(ACCOUNT_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+        // A TV often has no browser to open it in.
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(ACCOUNT_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (_: android.content.ActivityNotFoundException) {
+            message = "No browser here. Manage your account at $ACCOUNT_URL on your phone or computer."
+        }
     }
 
     /** Opens the feed sheet for whatever is playing, to add another of its feeds. */
@@ -1899,7 +1950,7 @@ class AppState(
         private set
 
     /** Pop out only from the viewer itself, not from browsing or an open sheet. */
-    val canPip get() = tiles.isNotEmpty() && !browsing && picker == null
+    val canPip get() = !isTv && tiles.isNotEmpty() && !browsing && picker == null
 
     /** The feed the pop-out shows: the big tile in main + strip, else the top-left one. */
     fun pipTile(): Tile? =
@@ -1994,6 +2045,58 @@ class AppState(
     fun toggleChrome() {
         if (chromeVisible) chromeVisible = false else showChrome()
     }
+
+    /** The up half of a remote key whose down half was handled here, so it doesn't click too. */
+    private var swallowKeyUp = -1
+
+    /**
+     * The TV remote while watching. Media keys always play, pause and skip. With the controls
+     * hidden, left and right skip 10 seconds and any other arrow or OK brings the controls up;
+     * with them up, the arrows move between buttons as usual and keep the controls from hiding.
+     * Returns true when the key was used here.
+     */
+    fun handleTvKey(event: android.view.KeyEvent): Boolean {
+        val code = event.keyCode
+        val down = event.action == android.view.KeyEvent.ACTION_DOWN
+        if (!down && code == swallowKeyUp) {
+            swallowKeyUp = -1
+            return true
+        }
+        val watching = tiles.isNotEmpty() && !browsing && !inPip && picker == null && tileMenu == null &&
+            !mapSheetOpen && !layoutSheetOpen && !sendToTvOpen
+        if (!watching || !down) return false
+        fun used(action: () -> Unit): Boolean {
+            if (event.repeatCount == 0 || code.isSkipKey()) action()
+            swallowKeyUp = code
+            return true
+        }
+        when (code) {
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> return used { togglePlay() }
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY -> return used { if (!playing) togglePlay() }
+            android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> return used { if (playing) togglePlay() }
+            android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> return used { skip(10_000) }
+            android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> return used { skip(-10_000) }
+        }
+        if (chromeVisible) {
+            showChrome()
+            return false
+        }
+        return when (code) {
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> used { skip(-10_000) }
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> used { skip(10_000) }
+            android.view.KeyEvent.KEYCODE_DPAD_CENTER,
+            android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.KEYCODE_NUMPAD_ENTER,
+            android.view.KeyEvent.KEYCODE_DPAD_UP,
+            android.view.KeyEvent.KEYCODE_DPAD_DOWN -> used { showChrome() }
+            else -> false
+        }
+    }
+
+    private fun Int.isSkipKey() = this == android.view.KeyEvent.KEYCODE_DPAD_LEFT ||
+        this == android.view.KeyEvent.KEYCODE_DPAD_RIGHT ||
+        this == android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD ||
+        this == android.view.KeyEvent.KEYCODE_MEDIA_REWIND
 
     // Shared playback. The first tile leads; the others follow it.
 

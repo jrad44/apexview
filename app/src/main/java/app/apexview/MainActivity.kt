@@ -95,6 +95,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** On a TV, the remote's keys while watching go to the viewer first (see [AppState.handleTvKey]). */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (::app.isInitialized && app.isTv && app.handleTvKey(event)) return true
+        return super.dispatchKeyEvent(event)
+    }
+
     /** Android 12+ pops out on its own (auto-enter); older versions need asking on the way out. */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
@@ -188,6 +194,8 @@ private fun Root(app: AppState) {
         when {
             app.tileMenu != null -> app.closeTileMenu()
             app.mapSheetOpen -> app.mapSheetOpen = false
+            // On a TV, Back first puts the controls away, then stops watching.
+            app.isTv && watching && app.chromeVisible && app.picker == null -> app.chromeVisible = false
             watching && app.picker == null -> app.stopAll()
             !app.back() -> Unit
         }
@@ -212,6 +220,7 @@ private fun Root(app: AppState) {
             }
         }
         if (!app.inPip) app.picker?.let { FeedPickerSheet(app, it) }
+        if (app.sendToTvOpen) SendToTvDialog(app)
         // Offered while browsing, never over a stream being watched.
         if (!app.inPip && !watching) UpdatePrompt(app.updater)
     }

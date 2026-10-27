@@ -1,5 +1,6 @@
 package app.apexview
 
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -209,6 +210,8 @@ internal fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> U
         Switch(
             checked = checked,
             onCheckedChange = onChange,
+            // The whole row toggles it, so the remote stops once per row, not twice.
+            modifier = Modifier.focusProperties { canFocus = false },
             colors = SwitchDefaults.colors(
                 checkedTrackColor = Color(0xFF30D158),
                 checkedThumbColor = Color.White,
@@ -249,6 +252,8 @@ fun SettingsScreen(app: AppState) {
                 SettingRow("Manage F1 TV account", onClick = app::openAccountPage) {
                     Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Opens in your browser", tint = Ink.secondary, modifier = Modifier.size(18.dp))
                 }
+                // Signs Apexview on a TV in with this phone's account: no typing with a remote.
+                if (!app.isTv) SettingRow("Sign in a TV", onClick = app::openSendToTv)
                 SettingRow("Sign out", onClick = app::signOut, trailing = null)
             }
         }

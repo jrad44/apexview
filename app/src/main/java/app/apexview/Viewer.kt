@@ -88,6 +88,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -330,7 +332,8 @@ fun ViewerScreen(app: AppState) {
             HelpOverlay(app, width, height, feedScale = 1f - lift * band / height, compact = with(density) { minOf(width, height).toDp() } < 600.dp)
         }
         LaunchedEffect(Unit) {
-            if (!app.helpSeen) {
+            // The gesture guide is about touch; a TV has the remote instead.
+            if (!app.helpSeen && !app.isTv) {
                 delay(HELP_FIRST_DELAY_MS)
                 if (app.tiles.isNotEmpty()) app.showHelp()
             }
@@ -386,7 +389,7 @@ private fun Modifier.mapGestures(app: AppState, density: androidx.compose.ui.uni
 @Composable
 private fun Glyph(icon: ImageVector, description: String, size: Int = 24, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
-        modifier.pressable(scaleTo = 0.88f, onClick = onClick).size(44.dp),
+        modifier.pressable(scaleTo = 0.88f, focusShape = CircleShape, onClick = onClick).size(44.dp),
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription = description, tint = Ink.primary, modifier = Modifier.size(size.dp))
@@ -430,12 +433,13 @@ private fun TopChrome(app: AppState, cutout: Clearance) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
         )
-        Glyph(if (app.arranging) Icons.Rounded.LockOpen else Icons.Rounded.Lock, if (app.arranging) "Lock layout" else "Unlock to move and resize", modifier = Modifier.helpAnchor(app, "lock"), onClick = app::toggleArranging)
+        // Moving and resizing feeds by hand needs a touchscreen; a TV uses the layout presets.
+        if (!app.isTv) Glyph(if (app.arranging) Icons.Rounded.LockOpen else Icons.Rounded.Lock, if (app.arranging) "Lock layout" else "Unlock to move and resize", modifier = Modifier.helpAnchor(app, "lock"), onClick = app::toggleArranging)
         Glyph(Icons.Rounded.Add, "Add a feed", modifier = Modifier.helpAnchor(app, "add")) { app.openPickerForPlaying() }
         Glyph(Icons.Rounded.GridView, "Layout: ${app.layoutMode.label}", modifier = Modifier.helpAnchor(app, "layout")) { app.layoutSheetOpen = true; app.showChrome() }
         if (app.timing != null) Glyph(Icons.Rounded.Headset, if (app.radioOpen) "Hide team radio" else "Team radio", modifier = Modifier.helpAnchor(app, "radio-button"), onClick = app::toggleRadio)
         if (app.timing != null || app.mapStatus != null) Glyph(Icons.Rounded.Map, "Track map", modifier = Modifier.helpAnchor(app, "map")) { app.mapSheetOpen = true }
-        Glyph(Icons.Rounded.HelpOutline, "What everything does", 22, onClick = app::showHelp)
+        if (!app.isTv) Glyph(Icons.Rounded.HelpOutline, "What everything does", 22, onClick = app::showHelp)
     }
 }
 
@@ -443,6 +447,14 @@ private fun TopChrome(app: AppState, cutout: Clearance) {
 private fun BottomChrome(app: AppState, cutout: Clearance) {
     var scrubbing by remember { mutableStateOf<Float?>(null) }
     val duration = app.durationMs
+    // On a TV the remote lands on play/pause each time the controls come up.
+    val playFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (app.isTv) {
+            delay(60)
+            runCatching { playFocus.requestFocus() }
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -478,7 +490,7 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
             Spacer(Modifier.weight(1f))
             Glyph(Icons.Rounded.Replay10, "Back 10 seconds", 28) { app.skip(-10_000) }
             Spacer(Modifier.width(12.dp))
-            Glyph(if (app.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (app.playing) "Pause" else "Play", 36, onClick = app::togglePlay)
+            Glyph(if (app.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (app.playing) "Pause" else "Play", 36, modifier = Modifier.focusRequester(playFocus), onClick = app::togglePlay)
             Spacer(Modifier.width(12.dp))
             Glyph(Icons.Rounded.Forward10, "Forward 10 seconds", 28) { app.skip(10_000) }
             Spacer(Modifier.weight(1f))
@@ -822,6 +834,8 @@ private fun TileMenuSheet(app: AppState, tile: Tile) {
                 if (!tile.audible) SecondaryButton("Play its audio") { app.setAudio(tile); app.closeTileMenu() }
                 SecondaryButton(if (tile.pinned) "Unpin" else "Pin") { app.togglePin(tile); app.closeTileMenu() }
                 SecondaryButton("Remove") { app.remove(tile) }
+                // Double-tap does this on a touchscreen.
+                if (app.isTv && !app.isMainTile(tile)) SecondaryButton("Make main") { app.swapIntoBig(tile); app.closeTileMenu() }
             }
             Text("Switch to", style = Type.headline, modifier = Modifier.padding(top = 4.dp, bottom = 4.dp))
             // Broadcast feeds as they come; onboards in running order with the tower's stats,

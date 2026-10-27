@@ -6,6 +6,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -89,20 +95,48 @@ fun AppTheme(content: @Composable () -> Unit) {
 
 /**
  * Tappable with press feedback on touch-down: a slight shrink that eases back. No ripple,
- * which reads as Android-default rather than designed.
+ * which reads as Android-default rather than designed. With a TV remote (or a keyboard), the
+ * focused one grows a little and gets a white outline in [focusShape], so it's clear where OK lands.
  */
-fun Modifier.pressable(enabled: Boolean = true, scaleTo: Float = 0.97f, onClick: () -> Unit): Modifier = composed {
+fun Modifier.pressable(
+    enabled: Boolean = true,
+    scaleTo: Float = 0.97f,
+    focusShape: Shape = FocusShape,
+    onClick: () -> Unit,
+): Modifier = composed {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    val focused by interaction.collectIsFocusedAsState()
     val scale by animateFloatAsState(
-        if (pressed && enabled) scaleTo else 1f,
+        when {
+            pressed && enabled -> scaleTo
+            focused -> FOCUS_SCALE
+            else -> 1f
+        },
         tween(Motion.PRESS_MS, easing = EaseOut),
         label = "press",
     )
+    val ring by animateFloatAsState(if (focused) 1f else 0f, tween(Motion.PRESS_MS, easing = EaseOut), label = "focus")
     this
         .graphicsLayer { scaleX = scale; scaleY = scale }
+        .drawWithContent {
+            drawContent()
+            if (ring > 0f) {
+                val width = FOCUS_RING.toPx()
+                drawOutline(
+                    focusShape.createOutline(size, layoutDirection, this),
+                    Color.White,
+                    alpha = ring,
+                    style = Stroke(width),
+                )
+            }
+        }
         .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
 }
+
+private const val FOCUS_SCALE = 1.04f
+private val FOCUS_RING = 3.dp
+private val FocusShape = RoundedCornerShape(12.dp)
 
 /** iOS-style slider: a round white thumb on a thin track, instead of Material's bar thumb. */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)

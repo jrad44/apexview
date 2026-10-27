@@ -410,6 +410,10 @@ private fun duration(seconds: Int): String? {
 
 @Composable
 fun SignInScreen(app: AppState) {
+    if (app.isTv) {
+        TvSignInScreen(app)
+        return
+    }
     var useToken by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Ink.background)) {
         AsyncImage(

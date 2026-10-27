@@ -218,6 +218,11 @@ class StateParse(val states: Map<String, StateLog>, val crossings: List<Pair<Str
  * File formats follow FastF1's parser: jsonStream lines are "HH:MM:SS.mmm" + JSON, and the ".z"
  * streams hold base64 raw-deflate JSON.
  */
+/** Ways [LiveTimingArchive] tries: token + browser name, browser name only, F1's app's name only. */
+private const val WAYS = 3
+/** The name F1's own app gives F1's timing servers. */
+private const val F1_APP_AGENT = "BestHTTP"
+
 class LiveTimingArchive(private val token: String, private val userAgent: String) {
 
     /** [watchedUtc]: when the video on screen was broadcast, if known; finds the session by time. */
@@ -636,17 +641,39 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         return best ?: FloatArray(0)
     }
 
+    /**
+     * How the archive answers: with the token and this device's browser name first, as FastF1
+     * does. F1's servers turn some devices and networks away with a 403 (a Chromecast, for one,
+     * and some cloud networks), though most of the archive doesn't need a login, so on a 403 it
+     * tries again without the token, then as F1's own app. Whichever works is kept for the rest.
+     */
+    private var way: Int = 0
+
     private fun fetch(path: String): String {
+        var last: IOException? = null
+        for (attempt in way until WAYS) {
+            try {
+                return fetchAs(path, attempt).also { way = attempt }
+            } catch (e: Refused) {
+                last = e
+            }
+        }
+        throw last ?: IOException("F1's timing archive refused the request")
+    }
+
+    private class Refused(code: Int) : IOException("F1's timing archive turned this device away (HTTP $code)")
+
+    private fun fetchAs(path: String, attempt: Int): String {
         val conn = URL(BASE + path).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 15_000
             conn.readTimeout = 60_000
-            conn.setRequestProperty("User-Agent", userAgent)
-            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("User-Agent", if (attempt >= 2) F1_APP_AGENT else userAgent)
+            if (attempt == 0) conn.setRequestProperty("Authorization", "Bearer $token")
             val code = conn.responseCode
-            if (code == 401 || code == 403) throw IOException("F1's timing archive refused the login (HTTP $code)")
+            if (code == 401 || code == 403) throw Refused(code)
             if (code >= 400) throw IOException("HTTP $code for ${path.substringAfterLast('/')}")
-            return conn.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8).removePrefix("﻿")
+            return conn.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8).removePrefix("\uFEFF")
         } finally {
             conn.disconnect()
         }

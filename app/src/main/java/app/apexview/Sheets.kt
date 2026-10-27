@@ -240,8 +240,9 @@ fun SettingsScreen(app: AppState) {
         derivedStateOf { if (list.firstVisibleItemIndex > 0) Float.MAX_VALUE else list.firstVisibleItemScrollOffset.toFloat() }
     }
     val span = with(density) { 50.dp.toPx() }
+    val pageFocus = rememberPageFocus()
     Box(Modifier.fillMaxSize().background(Ink.background)) {
-    LazyColumn(Modifier.fillMaxSize(), state = list) {
+    LazyColumn(Modifier.fillMaxSize().pageContent(pageFocus), state = list) {
         item {
             Spacer(Modifier.statusBarsPadding().height(60.dp))
             Text("Settings", style = Type.largeTitle, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
@@ -312,6 +313,7 @@ fun SettingsScreen(app: AppState) {
         fill = { (scrolled / span).coerceIn(0f, 1f) },
         titleIn = { ((scrolled - span * 0.6f) / (span * 0.4f)).coerceIn(0f, 1f) },
         leading = { backdrop -> GlyphButton(Icons.Rounded.ArrowBackIosNew, "Back", backdrop = backdrop) { app.back() } },
+        content = pageFocus,
     )
     }
 }

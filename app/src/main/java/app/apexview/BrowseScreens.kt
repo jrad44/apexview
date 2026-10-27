@@ -1,5 +1,17 @@
 package app.apexview
 
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -270,10 +282,13 @@ internal fun TopBar(
     titleIn: () -> Float,
     leading: (@Composable (backdrop: Float) -> Unit)? = null,
     trailing: (@Composable (backdrop: Float) -> Unit)? = null,
+    /** The page's content under the bar: where the remote's down goes (see [rememberPageFocus]). */
+    content: FocusRequester? = null,
 ) {
     Box(
         Modifier
             .fillMaxWidth()
+            .then(if (content != null) Modifier.focusProperties { down = content } else Modifier)
             .drawBehind { drawRect(Color.Black.copy(alpha = 0.82f * fill())) }
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
             .height(60.dp)
@@ -317,6 +332,7 @@ private fun ArtPage(
     val density = LocalDensity.current
     val context = LocalContext.current
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val pageFocus = rememberPageFocus()
     BoxWithConstraints(Modifier.fillMaxSize().background(Ink.background)) {
         val heroHeight = minOf(maxWidth * 9f / 16f, screenHeight * 0.62f).coerceAtLeast(320.dp)
         val heroPx = with(density) { heroHeight.toPx() }
@@ -366,7 +382,7 @@ private fun ArtPage(
             )
         }
 
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().pageContent(pageFocus), contentPadding = PaddingValues(bottom = 40.dp)) {
             item {
                 Box(Modifier.fillMaxWidth().height(heroHeight)) {
                     if (heroBox != null) heroBox()
@@ -385,6 +401,7 @@ private fun ArtPage(
             titleIn = { ((scrolled - heroPx * 0.62f) / (heroPx * 0.2f)).coerceIn(0f, 1f) },
             leading = leading,
             trailing = trailing,
+            content = pageFocus,
         )
     }
 }
@@ -473,10 +490,22 @@ fun HomeScreen(app: AppState) {
     val pager = key(count) { rememberPagerState(initialPage = if (count > 1) count * 500 else 0) { if (count > 1) count * 1000 else count } }
     val dragged by pager.interactionSource.collectIsDraggedAsState()
     // Turns on its own, and waits a full turn again after you swipe.
+    // Not on a TV: turning would take the remote's focus off the button it's on.
     LaunchedEffect(pager, pager.settledPage, dragged) {
-        if (count < 2 || dragged) return@LaunchedEffect
+        if (count < 2 || dragged || app.isTv) return@LaunchedEffect
         delay(CAROUSEL_MS)
         pager.animateScrollToPage(pager.currentPage + 1, animationSpec = tween(Motion.SCREEN_MS * 2, easing = EaseOut))
+    }
+    // On a TV, left from the hero's first button and right from its last turn the carousel,
+    // and the remote lands on the new slide's main button.
+    val scope = rememberCoroutineScope()
+    val heroFocus = remember { FocusRequester() }
+    val turn: (Int) -> Unit = { step ->
+        if (count > 1) scope.launch {
+            pager.animateScrollToPage(pager.currentPage + step, animationSpec = tween(Motion.SCREEN_MS, easing = EaseOut))
+            delay(50)
+            runCatching { heroFocus.requestFocus() }
+        }
     }
     // Every slide's artwork loads ahead, so turning never waits on it.
     val context = LocalContext.current
@@ -507,7 +536,7 @@ fun HomeScreen(app: AppState) {
                                 .align(Alignment.BottomStart)
                                 .padding(start = SidePadding, end = SidePadding, top = 8.dp, bottom = if (count > 1) 30.dp else 8.dp)
                                 .widthIn(max = 560.dp)
-                        ) { PickHero(app, picks[page.mod(count)]) }
+                        ) { PickHero(app, picks[page.mod(count)], heroFocus, if (app.isTv) turn else null) }
                     }
                 }
                 if (count > 1) PageDots(count, pager, Modifier.align(Alignment.BottomStart).padding(start = SidePadding, bottom = 8.dp))
@@ -727,7 +756,7 @@ private fun CarouselArt(picks: List<Pick>, pager: PagerState) {
 
 /** One slide's words and buttons: why it's here, what it is, and how to watch it. */
 @Composable
-private fun PickHero(app: AppState, pick: Pick) {
+private fun PickHero(app: AppState, pick: Pick, focus: FocusRequester? = null, turn: ((Int) -> Unit)? = null) {
     val item = pick.item
     val resume = pick.resume
     val weekend = pick.weekend
@@ -756,14 +785,31 @@ private fun PickHero(app: AppState, pick: Pick) {
     Text(title, style = Type.largeTitle, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
     if (line.isNotEmpty()) Text(line, style = Type.subhead, maxLines = 1, overflow = TextOverflow.Ellipsis)
     Spacer(Modifier.height(16.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        when {
-            resume != null -> PrimaryButton("Resume", Icons.Rounded.PlayArrow) { app.resumeWatching(resume) }
-            item != null -> {
-                PrimaryButton(if (item.live) "Watch live" else "Play", Icons.Rounded.PlayArrow) { app.watch(item) }
-                app.weekendOf(item)?.let { w -> SecondaryButton("Weekend") { app.open(Screen.Weekend(w)) } }
+    // Which button the remote is on (0 = the main one), so left and right know when to turn.
+    var focused by remember { mutableIntStateOf(-1) }
+    val weekendOfItem = item?.let { app.weekendOf(it) }
+    val last = if (resume == null && item != null && weekendOfItem != null) 1 else 0
+    fun tracked(i: Int): Modifier =
+        Modifier.onFocusChanged { if (it.isFocused) focused = i else if (focused == i) focused = -1 }
+    val main = tracked(0).then(if (focus != null) Modifier.focusRequester(focus) else Modifier)
+    Row(
+        Modifier.onPreviewKeyEvent { e ->
+            if (turn == null || e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when {
+                e.key == Key.DirectionRight && focused == last -> { turn(1); true }
+                e.key == Key.DirectionLeft && focused == 0 -> { turn(-1); true }
+                else -> false
             }
-            weekend != null -> PrimaryButton(if (weekend.startMs > System.currentTimeMillis()) "Schedule" else "Sessions") {
+        },
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        when {
+            resume != null -> PrimaryButton("Resume", Icons.Rounded.PlayArrow, main) { app.resumeWatching(resume) }
+            item != null -> {
+                PrimaryButton(if (item.live) "Watch live" else "Play", Icons.Rounded.PlayArrow, main) { app.watch(item) }
+                weekendOfItem?.let { w -> SecondaryButton("Weekend", tracked(1)) { app.open(Screen.Weekend(w)) } }
+            }
+            weekend != null -> PrimaryButton(if (weekend.startMs > System.currentTimeMillis()) "Schedule" else "Sessions", modifier = main) {
                 app.open(Screen.Weekend(weekend))
             }
         }

@@ -80,8 +80,9 @@ fun CalendarScreen(app: AppState) {
         if (index > 2 && !classic) list.scrollToItem(index + 1, -with(density) { 90.dp.roundToPx() }) else list.scrollToItem(0)
     }
 
+    val pageFocus = rememberPageFocus()
     Box(Modifier.fillMaxSize().background(Ink.background)) {
-        LazyColumn(Modifier.fillMaxSize(), state = list) {
+        LazyColumn(Modifier.fillMaxSize().pageContent(pageFocus), state = list) {
             item {
                 Spacer(Modifier.statusBarsPadding().height(60.dp))
                 Text(if (classic) "$year season" else "$year calendar", style = Type.largeTitle, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
@@ -121,6 +122,7 @@ fun CalendarScreen(app: AppState) {
             fill = { (scrolled / span).coerceIn(0f, 1f) },
             titleIn = { ((scrolled - span * 0.6f) / (span * 0.4f)).coerceIn(0f, 1f) },
             leading = { backdrop -> GlyphButton(Icons.Rounded.ArrowBackIosNew, "Back", backdrop = backdrop) { app.back() } },
+            content = pageFocus,
             // Reminders sit in the bar, always in reach however far the season is scrolled.
             trailing = { backdrop ->
                 GlyphButton(

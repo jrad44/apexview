@@ -1,6 +1,7 @@
 package app.apexview
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -211,3 +212,27 @@ private fun Field(value: String, onChange: (String) -> Unit, hint: String, type:
         modifier = Modifier.fillMaxWidth(),
     )
 }
+
+/**
+ * A page's scrolling content, as the remote sees it. Pages draw their top bar over the content,
+ * and with the two overlapping the remote can't tell what's "below" the bar's buttons, so from
+ * the bar, down goes here explicitly ([TopBar]'s content). On a TV the page also starts here,
+ * on its first button or card, rather than up in the corner.
+ */
+@Composable
+internal fun rememberPageFocus(): FocusRequester {
+    val requester = remember { FocusRequester() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val tv = remember { Tv.isTv(context) }
+    LaunchedEffect(Unit) {
+        if (tv) {
+            delay(150)
+            runCatching { requester.requestFocus() }
+        }
+    }
+    return requester
+}
+
+/** Marks the content [rememberPageFocus] leads into: asking it for focus picks its first button. */
+internal fun Modifier.pageContent(requester: FocusRequester): Modifier =
+    focusRequester(requester).focusGroup()

@@ -1,0 +1,110 @@
+# Builds a signed APK and publishes it on GitHub.
+#   main → a normal release. The app's updater follows the latest one, so phones and TVs offer it.
+#   tv   → a "tv-preview" pre-release, replaced on each push, for trying TV work before it ships.
+#          Pre-releases are never offered as updates.
+# Both keep the same file name, so these links always give the newest build:
+#   github.com/<owner>/apexview/releases/latest/download/apexview-fold.apk
+#   github.com/<owner>/apexview/releases/download/tv-preview/apexview-fold.apk
+#
+# One-time setup — add these repository secrets (Settings > Secrets and variables > Actions):
+#   KEYSTORE_BASE64    the release keystore (.jks), base64-encoded
+#   KEYSTORE_PASSWORD  its store password
+#   KEY_ALIAS          the key's alias
+#   KEY_PASSWORD       the key's password
+# Keep a copy of the keystore somewhere safe: Android only accepts updates signed with the same key.
+
+name: Build and release APK
+
+on:
+  push:
+    branches: [main, tv]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      BASE_VERSION: "0.46"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Check signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Signing secrets are missing. See the comment at the top of this workflow."
+            exit 1
+          fi
+
+      - name: Write signing config
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > keystore.properties
+
+      - name: Set version
+        run: |
+          echo "APEX_VERSION_NAME=${BASE_VERSION}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "APEX_VERSION_CODE=$((4600 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        run: |
+          ./gradlew --no-daemon assembleRelease
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/apexview-fold.apk
+          sha256sum dist/apexview-fold.apk | tee dist/SHA256.txt
+
+      - name: Publish release
+        if: github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${APEX_VERSION_NAME}" dist/apexview-fold.apk \
+            --target "$GITHUB_SHA" \
+            --title "Apexview Fold ${APEX_VERSION_NAME}" \
+            --notes "$(git log -1 --pretty=%B)
+
+          SHA-256: $(cut -d' ' -f1 dist/SHA256.txt)"
+
+      - name: Publish TV preview
+        if: github.ref_name != 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete tv-preview --cleanup-tag --yes || true
+          gh release create tv-preview dist/apexview-fold.apk \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "TV preview ${APEX_VERSION_NAME}" \
+            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Not offered as an update.
+
+          $(git log -1 --pretty=%B)
+
+          SHA-256: $(cut -d' ' -f1 dist/SHA256.txt)"
+
+      - name: Clean up signing files
+        if: always()
+        run: rm -f keystore.properties "$RUNNER_TEMP/release.jks"
